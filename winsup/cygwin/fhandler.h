@@ -2122,6 +2122,95 @@ class fhandler_procnet: public fhandler_proc
   }
 };
 
+class fhandler_dev_fuse: public fhandler_base
+{
+ protected:
+  HANDLE handin;
+  HANDLE handout;
+
+ public:
+  fhandler_dev_fuse ();
+  ~fhandler_dev_fuse ();
+
+  int open (int flags, mode_t mode = 0);
+
+#if 0
+  ssize_t __stdcall write (const void *ptr, size_t ulen);
+  void __stdcall read (void *ptr, size_t& len) __attribute__ ((regparm (3)));
+  _off64_t lseek (_off64_t offset, int whence);
+#endif
+  int __stdcall fstat (struct __stat64 *buf) __attribute__ ((regparm (2)));
+#if 0
+  HANDLE mmap (caddr_t *addr, size_t len, int prot, int flags, _off64_t off);
+  int munmap (HANDLE h, caddr_t addr, size_t len);
+  int msync (HANDLE h, caddr_t addr, size_t len, int flags);
+  bool fixup_mmap_after_fork (HANDLE h, int prot, int flags,
+			      _off64_t offset, DWORD size, void *address);
+#endif
+  fhandler_dev_fuse (void *) {}
+
+  void copyto (fhandler_base *x)
+  {
+    x->pc.free_strings ();
+    *reinterpret_cast<fhandler_dev_fuse *> (x) = *this;
+    x->reset (this);
+  }
+
+  fhandler_dev_fuse *clone (cygheap_types malloc_type = HEAP_FHANDLER)
+  {
+    void *ptr = (void *) ccalloc (malloc_type, 1, sizeof (fhandler_dev_fuse));
+    fhandler_dev_fuse *fh = new (ptr) fhandler_dev_fuse (ptr);
+    copyto (fh);
+    return fh;
+  }
+};
+
+class fhandler_fs_fuse: public fhandler_virtual
+{
+ protected:
+  HANDLE handin;
+  HANDLE handout;
+
+ public:
+  fhandler_fs_fuse ();
+  ~fhandler_fs_fuse ();
+
+  static int mount(const char *in, char *out);
+
+  int open (int flags, mode_t mode = 0);
+  virtual virtual_ftype_t exists();
+
+#if 0
+  ssize_t __stdcall write (const void *ptr, size_t ulen);
+  void __stdcall read (void *ptr, size_t& len) __attribute__ ((regparm (3)));
+  _off64_t lseek (_off64_t offset, int whence);
+#endif
+  int __stdcall fstat (struct __stat64 *buf) __attribute__ ((regparm (2)));
+#if 0
+  HANDLE mmap (caddr_t *addr, size_t len, int prot, int flags, _off64_t off);
+  int munmap (HANDLE h, caddr_t addr, size_t len);
+  int msync (HANDLE h, caddr_t addr, size_t len, int flags);
+  bool fixup_mmap_after_fork (HANDLE h, int prot, int flags,
+			      _off64_t offset, DWORD size, void *address);
+#endif
+  fhandler_fs_fuse (void *) {}
+
+  void copyto (fhandler_base *x)
+  {
+    x->pc.free_strings ();
+    *reinterpret_cast<fhandler_fs_fuse *> (x) = *this;
+    x->reset (this);
+  }
+
+  fhandler_fs_fuse *clone (cygheap_types malloc_type = HEAP_FHANDLER)
+  {
+    void *ptr = (void *) ccalloc (malloc_type, 1, sizeof (fhandler_fs_fuse));
+    fhandler_fs_fuse *fh = new (ptr) fhandler_fs_fuse (ptr);
+    copyto (fh);
+    return fh;
+  }
+};
+
 struct fhandler_nodevice: public fhandler_base
 {
   fhandler_nodevice ();
@@ -2168,4 +2257,6 @@ typedef union
   char __pty_slave[sizeof (fhandler_pty_slave)];
   char __virtual[sizeof (fhandler_virtual)];
   char __windows[sizeof (fhandler_windows)];
+  char __dev_fuse[sizeof (fhandler_dev_fuse)];
+  char __fs_fuse[sizeof (fhandler_fs_fuse)];
 } fhandler_union;

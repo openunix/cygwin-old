@@ -693,6 +693,19 @@ mount_info::conv_to_win32_path (const char *src_path, char *dst, device& dev,
 
   if (i < nmounts)
     {
+
+      /* Note that we don't support root to be a fuse mount*/
+      if ((mi->flags & MOUNT_FUSE) && chroot_pathlen == 0)
+	{
+	  dev = FH_FUSE_FS;
+	  dev.native = mi->native_path;
+	  dev.name = mi->posix_path;
+
+	  /* What is this used for? */
+	  strcpy(dst, src_path);
+	  goto out;
+	}
+
       int err = mi->build_win32 (dst, src_path, flags, chroot_pathlen);
       if (err)
 	return err;
@@ -1429,9 +1442,14 @@ mount_info::add_item (const char *native, const char *posix,
   int nativeerr, posixerr;
 
   /* Something's wrong if either path is NULL or empty, or if it's
-     not a UNC or absolute path. */
+     not a UNC or absolute path or fuse mount data. */
 
-  if (native == NULL || !isabspath (native) ||
+  if ((mountflags & MOUNT_FUSE) && (native != NULL)){
+    nativeerr = fhandler_fs_fuse::mount(native, nativetmp);
+    nativetail = NULL;
+    debug_printf("Add fuse mount %s(%s) => %s", native, nativetmp, posix);
+  }
+  else if (native == NULL || !isabspath (native) ||
       !(is_native_path (native) || is_unc_share (native) || isdrive (native)))
     nativeerr = EINVAL;
   else
@@ -1795,6 +1813,10 @@ mount (const char *win32_path, const char *posix_path, unsigned flags)
 	  if ((flags & ~MOUNT_SYSTEM) == (MOUNT_BIND | MOUNT_BINARY))
 	    flags = (MOUNT_BIND | conv_flags)
 		    & ~(MOUNT_IMMUTABLE | MOUNT_AUTOMATIC);
+	}
+      else if (flags & MOUNT_FUSE)
+	{
+	  /* XXX need to check additional FUSE mount flags here.*/
 	}
       /* Make sure all mounts are user mounts, even those added via mount -a. */
       flags &= ~MOUNT_SYSTEM;

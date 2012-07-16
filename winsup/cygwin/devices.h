@@ -47,9 +47,11 @@ enum fh_devices
   DEV_SERIAL_MAJOR = 117,
   FH_SERIAL  = FHDEV (117, 0),	/* /dev/ttyS? */
 
-  DEV_MISC_MAJOR = 13,
+  DEV_MISC_MAJOR = 13,		/* FIXME: Should be 10 ? */
   FH_WINDOWS = FHDEV (DEV_MISC_MAJOR, 255),
   FH_CLIPBOARD=FHDEV (DEV_MISC_MAJOR, 254),
+  FH_FUSE_DEV= FHDEV (DEV_MISC_MAJOR, 229),
+  FH_FUSE_NATIVE = FHDEV (10, 229),
 
   /* begin /proc directories */
 
@@ -74,6 +76,7 @@ enum fh_devices
   FH_NETDRIVE= FHDEV (DEV_VIRTFS_MAJOR, 194),
   FH_DEV     = FHDEV (DEV_VIRTFS_MAJOR, 193),
   FH_CYGDRIVE= FHDEV (DEV_VIRTFS_MAJOR, 192),
+  FH_FUSE_FS = FHDEV (DEV_VIRTFS_MAJOR, 191),
 
   DEV_FLOPPY_MAJOR = 2,
   FH_FLOPPY  = FHDEV (DEV_FLOPPY_MAJOR, 0),
@@ -373,7 +376,7 @@ extern const device dev_fs_storage;
 #define isprocsys_dev(devn) (devn == FH_PROCSYS)
 
 #define isvirtual_dev(devn) \
-  (isproc_dev (devn) || devn == FH_CYGDRIVE || devn == FH_NETDRIVE)
+  (isproc_dev (devn) || devn == FH_CYGDRIVE || devn == FH_NETDRIVE || devn == FH_FUSE_FS)
 
 #define iscons_dev(n) \
   ((device::major ((int) (n)) == DEV_CONS_MAJOR) \

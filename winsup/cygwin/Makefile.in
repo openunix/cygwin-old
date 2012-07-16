@@ -252,6 +252,7 @@ fhandler_disk_file_CFLAGS:=-fomit-frame-pointer
 fhandler_dsp_CFLAGS:=-fomit-frame-pointer
 fhandler_floppy_CFLAGS:=-fomit-frame-pointer
 fhandler_mem_CFLAGS:=-fomit-frame-pointer
+fhandler_fuse_CFLAGS:=-fomit-frame-pointer
 fhandler_netdrive_CFLAGS:=-fomit-frame-pointer
 fhandler_proc_CFLAGS:=-fomit-frame-pointer
 fhandler_process_CFLAGS:=-fomit-frame-pointer

@@ -533,6 +533,12 @@ fh_alloc (path_conv& pc)
 	case FH_PORT:
 	  fh = cnew (fhandler_dev_mem);
 	  break;
+	case FH_FUSE_DEV:
+	  fh = cnew (fhandler_dev_fuse);
+	  break;
+	case FH_FUSE_FS:
+	  fh = cnew (fhandler_fs_fuse);
+	  break;
 	case FH_CLIPBOARD:
 	  fh = cnew (fhandler_dev_clipboard);
 	  break;

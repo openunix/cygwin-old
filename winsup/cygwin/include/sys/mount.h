@@ -40,7 +40,8 @@ enum
   MOUNT_DOS =		0x40000,	/* convert leading spaces and trailing
 					   dots and spaces to private use area */
   MOUNT_IHASH =		0x80000,	/* Enforce hash values for inode numbers */
-  MOUNT_BIND =		0x100000	/* Allows bind syntax in fstab file. */
+  MOUNT_BIND =		0x100000,	/* Allows bind syntax in fstab file. */
+  MOUNT_FUSE =		0x200000	/* Fuse like mount */
 };
 
 int mount (const char *, const char *, unsigned __flags);
