@@ -2167,6 +2167,8 @@ class fhandler_dev_fuse: public fhandler_base
 
 class fhandler_fs_fuse: public fhandler_virtual
 {
+private:
+	int path_conv_off;
  protected:
   HANDLE handin;
   HANDLE handout;
@@ -2178,6 +2180,9 @@ class fhandler_fs_fuse: public fhandler_virtual
   static int mount(const char *in, char *out);
 
   int open (int flags, mode_t mode = 0);
+  void set_name(path_conv &in_pc);
+  const char *get_relative_name() const {return get_name() + path_conv_off;}
+
   virtual virtual_ftype_t exists();
 
 #if 0
