@@ -38,6 +38,11 @@
     debug_only_printf(fmt, ## args);		\
   }while(0)
 
+#define SMALL_PRINTF(fmt, args...)			\
+  do {							\
+    small_printf(fmt, ## args);				\
+  }while(0)
+
 /**********************************************************************/
 /* fhandler_dev_fuse */
 inline PSECURITY_ATTRIBUTES
@@ -843,6 +848,7 @@ struct fuse_file {
 	/** Node id of this file */
 	u64 nodeid;
 
+  struct fuse_attr attr;
 #if 0
 	/** Refcount */
 	atomic_t count;
@@ -1326,7 +1332,8 @@ int fuse_valid_type(int m)
 }
 
 
-int fuse_lookup_name(struct super_block *sb, u64 nodeid, struct qstr *name,
+static int
+fuse_lookup_name(struct super_block *sb, u64 nodeid, struct qstr *name,
 		     struct fuse_entry_out *outarg, struct inode **inode)
 {
 	struct fuse_conn *fc = get_fuse_conn_super(sb);
@@ -1389,10 +1396,60 @@ int fuse_lookup_name(struct super_block *sb, u64 nodeid, struct qstr *name,
 	return err;
 }
 
+static int
+fuse_lookup_path(struct fuse_conn *fc, const char *path,
+		 struct fuse_entry_out *outarg)
+{
+  const unsigned char *cur = (const unsigned char *)path;
+  struct super_block s;
+  struct qstr name;
+  int ret = 0;
+  u64 nodeid = FUSE_ROOT_ID;
+
+  CHECK_IN("(%s)", path);
+
+  if (!*path)
+    return EINVAL;
+
+  s.s_fs_info = fc;
+  do {
+    while (*cur == '/') cur++;
+    name.name = cur;
+    while (*cur && *cur != '/') cur++;
+    name.len = cur - name.name;
+    ret = fuse_lookup_name(&s, nodeid, &name, outarg, NULL);
+    if (ret)
+      goto out;
+    nodeid = outarg->nodeid;
+  }while (*cur);
+
+ out:
+  CHECK_OUT("(%d)", ret);
+  return ret;
+}
+
+static struct fuse_file *
+fuse_file_alloc(struct fuse_conn *fc)
+{
+  struct fuse_file *ff;
+
+  ff = (struct fuse_file *)malloc(sizeof(struct fuse_file));
+  if (!ff)
+    return NULL;
+
+  ff->fc = fc;
+  ff->reserved_req = fuse_request_alloc();
+  if (!ff->reserved_req) {
+    free(ff);
+    return NULL;
+  }
+
+  return ff;
+}
 
 
 fhandler_fs_fuse::fhandler_fs_fuse ()
-  : fhandler_virtual (), path_conv_off(0)
+  : fhandler_virtual (), path_conv_off(0), ff(NULL)
 {
   CHECK_IN("NULL %s", "IN");
   CHECK_OUT("%d", 0);
@@ -1467,13 +1524,68 @@ fhandler_fs_fuse::set_name(path_conv &in_pc)
   CHECK_OUT("(%s)", get_relative_name());
 }
 
+static void
+fuse_file_fill(struct fuse_file *ff, struct fuse_entry_out *out)
+{
+  ff->attr = out->attr;
+  ff->nodeid = out->nodeid;
+}
+
+
 virtual_ftype_t
 fhandler_fs_fuse::exists ()
 {
-  virtual_ftype_t ret = virt_rootdir;
+  virtual_ftype_t ret = virt_none;
+  struct fuse_entry_out o;
+  const char *path = get_relative_name();
 
-  CHECK_IN("(%s, %s)", get_relative_name(), pc.dev.native);
+  CHECK_IN("(%s, %s)", path, pc.dev.native);
 
+  if (!ff)
+    ff = fuse_file_alloc(NULL);
+  if (!ff){
+    SMALL_PRINTF("Alloc fuse file failed");
+    goto out;
+  }
+
+  if (!*path){
+    ret = virt_rootdir;
+    goto out;
+  }
+
+  if (fuse_lookup_path(ff->fc, path, &o)){
+    goto out;
+  }
+
+  fuse_file_fill(ff, &o);
+
+  switch (ff->attr.mode & S_IFMT){
+  case S_IFIFO:
+    ret = virt_pipe;
+    break;
+  case S_IFCHR:
+    ret = virt_chr;
+    break;
+  case S_IFDIR:
+    ret = virt_directory;
+    break;
+  case S_IFBLK:
+    ret = virt_blk;
+    break;
+  case S_IFREG:
+    ret = virt_file;
+    break;
+  case S_IFLNK:
+    ret = virt_symlink;
+    break;
+  case S_IFSOCK:
+    ret = virt_socket;
+    break;
+  default:
+    ret = virt_none;
+  }
+
+ out:
   CHECK_OUT("(%d)", ret);
 
   return ret;

@@ -2165,10 +2165,12 @@ class fhandler_dev_fuse: public fhandler_base
   }
 };
 
+struct fuse_file;
 class fhandler_fs_fuse: public fhandler_virtual
 {
 private:
 	int path_conv_off;
+	struct fuse_file *ff;
  protected:
   HANDLE handin;
   HANDLE handout;
