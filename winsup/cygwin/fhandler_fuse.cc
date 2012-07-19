@@ -852,9 +852,10 @@ struct fuse_file {
 #if 0
 	/** Refcount */
 	atomic_t count;
-
+#endif
 	/** FOPEN_* flags returned by open */
 	u32 open_flags;
+#if 0
 	/** Entry on inode's write_files list */
 	struct list_head write_entry;
 
@@ -1199,10 +1200,10 @@ struct fuse_conn {
 
 	/** The number of requests waiting for completion */
 	atomic_t num_waiting;
-
+#endif
 	/** Negotiated minor version */
 	unsigned minor;
-
+#if 0
 	/** Backing dev info */
 	struct backing_dev_info bdi;
 
@@ -1447,6 +1448,74 @@ fuse_file_alloc(struct fuse_conn *fc)
   return ff;
 }
 
+static void
+fuse_file_update(struct fuse_file *ff, struct fuse_attr_out *out)
+{
+  ff->attr = out->attr;
+}
+
+static void
+fuse_fillattr(struct fuse_attr *attr, __stat64 *stat)
+{
+  stat->st_ino = attr->ino;
+  stat->st_mode = attr->mode & 07777;
+  stat->st_nlink = attr->nlink;
+  stat->st_uid = attr->uid;
+  stat->st_gid = attr->gid;
+  stat->st_atim.tv_sec = attr->atime;
+  stat->st_atim.tv_nsec = attr->atimensec;
+  stat->st_mtim.tv_sec = attr->mtime;
+  stat->st_mtim.tv_nsec = attr->mtimensec;
+  stat->st_ctim.tv_sec = attr->ctime;
+  stat->st_ctim.tv_nsec = attr->ctimensec;
+  stat->st_size = attr->size;
+  stat->st_blocks = attr->blocks;
+}
+
+
+static int
+fuse_do_getattr(struct fuse_file *ff, int opened_file)
+{
+	int err;
+	struct fuse_getattr_in inarg;
+	struct fuse_attr_out outarg;
+	struct fuse_conn *fc = ff->fc;
+	struct fuse_req *req;
+	u64 attr_version;
+
+	req = fuse_get_req(fc);
+	if (IS_ERR(req))
+		return PTR_ERR(req);
+
+	attr_version = fuse_get_attr_version(fc);
+
+	memset(&inarg, 0, sizeof(inarg));
+	memset(&outarg, 0, sizeof(outarg));
+	/* Directories have separate file-handle space */
+	if (opened_file && S_ISREG(ff->attr.mode)) {
+		inarg.getattr_flags |= FUSE_GETATTR_FH;
+		inarg.fh = ff->fh;
+	}
+	req->in.h.opcode = FUSE_GETATTR;
+	req->in.h.nodeid = ff->nodeid;
+	req->in.numargs = 1;
+	req->in.args[0].size = sizeof(inarg);
+	req->in.args[0].value = &inarg;
+	req->out.numargs = 1;
+#if 0
+	if (fc->minor < 9)
+		req->out.args[0].size = FUSE_COMPAT_ATTR_OUT_SIZE;
+	else
+#endif
+		req->out.args[0].size = sizeof(outarg);
+	req->out.args[0].value = &outarg;
+	fuse_request_send(fc, req);
+	err = req->out.h.error;
+	fuse_put_request(fc, req);
+	fuse_file_update(ff, &outarg);
+
+	return err;
+}
 
 fhandler_fs_fuse::fhandler_fs_fuse ()
   : fhandler_virtual (), path_conv_off(0), ff(NULL)
@@ -1455,18 +1524,104 @@ fhandler_fs_fuse::fhandler_fs_fuse ()
   CHECK_OUT("%d", 0);
 }
 
+void fuse_file_free(struct fuse_file *ff)
+{
+	fuse_request_free(ff->reserved_req);
+	free(ff);
+}
+
 fhandler_fs_fuse::~fhandler_fs_fuse ()
 {
   CHECK_IN("NULL %s", "IN");
+  fuse_file_free(ff);
   CHECK_OUT("%d", 0);
+}
+
+static int
+fuse_send_open(struct fuse_conn *fc, struct fuse_file *ff, int flags,
+	       int opcode, struct fuse_open_out *outargp)
+{
+	struct fuse_open_in inarg;
+	struct fuse_req *req;
+	int err;
+
+	req = fuse_get_req(fc);
+	if (IS_ERR(req))
+		return PTR_ERR(req);
+
+	memset(&inarg, 0, sizeof(inarg));
+	inarg.flags = flags & ~(O_CREAT | O_EXCL | O_NOCTTY);
+#if 0
+	if (!fc->atomic_o_trunc)
+		inarg.flags &= ~O_TRUNC;
+#endif
+	req->in.h.opcode = opcode;
+	req->in.h.nodeid = ff->nodeid;
+	req->in.numargs = 1;
+	req->in.args[0].size = sizeof(inarg);
+	req->in.args[0].value = &inarg;
+	req->out.numargs = 1;
+	req->out.args[0].size = sizeof(*outargp);
+	req->out.args[0].value = outargp;
+	fuse_request_send(fc, req);
+	err = req->out.h.error;
+	fuse_put_request(fc, req);
+
+	return err;
+}
+
+static int
+fuse_do_open(struct fuse_file *ff, int flags, mode_t mode, int isdir)
+{
+  struct fuse_conn *fc = ff->fc;
+	struct fuse_open_out outarg;
+	int err;
+	int opcode = isdir ? FUSE_OPENDIR : FUSE_OPEN;
+
+	err = fuse_send_open(fc, ff, flags, opcode, &outarg);
+	if (err) {
+		return err;
+	}
+
+	if (isdir)
+		outarg.open_flags &= ~FOPEN_DIRECT_IO;
+
+	ff->fh = outarg.fh;
+	ff->open_flags = outarg.open_flags;
+
+	return 0;
 }
 
 int
 fhandler_fs_fuse::open (int flags, mode_t mode)
 {
+  virtual_ftype_t vft = virt_rootdir;
   int ret = 1;
 
   CHECK_IN("(%x, %x)", flags, (unsigned int)mode);
+
+  ret = fhandler_virtual::open(flags, mode);
+  if (!ret)
+    goto out;
+
+  if (!ff || !ff->nodeid)
+    vft = exists();
+  if (vft == virt_none){
+    set_errno(ENOENT);
+    goto out;
+  }
+
+  ret = fuse_do_open(ff, flags, mode, 0);
+  if (ret){
+    set_errno(ret);
+    ret = 0;
+    goto out;
+  }
+
+  set_open_status();
+  ret = 1;
+
+ out:
   CHECK_OUT("(%d)", ret);
   return ret;
 }
@@ -1474,10 +1629,36 @@ fhandler_fs_fuse::open (int flags, mode_t mode)
 int
 fhandler_fs_fuse::fstat (struct __stat64 *buf)
 {
-  int ret = 1;
-
+  virtual_ftype_t vft = virt_rootdir;
+  int ret = -1;
+  
   CHECK_IN("(%p)", buf);
-  ret = fhandler_base::fstat (buf);
+
+  /* We need the st_dev from super */
+  ret = fhandler_base::fstat(buf);
+  if (ret)
+    goto out;
+
+  /* Double check, exists() should already be called before this. */
+  if (!ff || !ff->nodeid)
+    vft = exists();
+  if (vft == virt_none){
+    set_errno(ENOENT);
+    goto out;
+  }
+
+  if (vft == virt_rootdir){
+    ret  = fuse_do_getattr(ff, !!openflags);
+    if (ret){
+      set_errno(ret);
+      ret = -1;
+      goto out;
+    }
+  }
+
+  fuse_fillattr(&(ff->attr), buf);
+
+ out:
   CHECK_OUT("(%d)", ret);
 
   return ret;
