@@ -1123,11 +1123,12 @@ struct fuse_conn {
 
 	/** The next unique request id */
 	u64 reqctr;
-
+#endif
 	/** Connection established, cleared on umount, connection
 	    abort and device release */
 	unsigned connected;
-
+  HANLDE fh;
+#if 0
 	/** Connection failed (version mismatch).  Cannot race with
 	    setting other bitfields since it is only set once in INIT
 	    reply, before any other request, and never cleared */
@@ -1284,9 +1285,131 @@ void fuse_put_request(struct fuse_conn *fc, struct fuse_req *req)
 			fuse_request_free(req);
 }
 
-void fuse_request_send(struct fuse_conn *fc, struct fuse_req *req)
-{
 
+
+static int
+fuse_trans_one(struct fuse_conn *fc, void *val, unsigned size,
+	       int send)
+{
+  int rsize, ret = 0;
+
+  CHECK_IN("(%p, %p, %d, %s)", fc, val, size, send ? "send" : "recv");
+  if (!fc || !fc->connected){
+    ret = -EINVAL;
+    goto out;
+  }
+
+  /* XXX Should we use loop here? */
+  while (size){
+    if (send)
+      ret = WriteFile(fc->h, val, size, &rsize, NULL);
+    else
+      ret = ReadFile(fc->h, val, size, &rsize, NULL);
+    if (!ret){
+      ret = GetLastError();
+      goto out;
+    }
+    CHECK_DBG("Want %d while get %d", size, rsize);
+    size -= rsize;
+  }
+ 
+ out:
+  CHECK_OUT("(%d)", ret);
+  return ret;
+}
+
+static int
+fuse_trans_args(struct fuse_conn *fc, unsigned numargs,
+		struct fuse_arg *args, int send)
+{
+  int err = 0;
+  unsigned i;
+  
+  CHECK_IN("(%p, %d, %p, %s)", fc, numargs, args, send ? "send" : "recv");
+  
+  for (i = 0; i < numargs; i++)  {
+    struct fuse_arg *arg = &args[i];
+    err = fuse_trans_one(cs, arg->value, arg->size, send);
+    if (err)
+      goto out;
+  }
+
+ out:
+  CHECK_OUT("(%d)", err);
+  return err;
+}
+
+static int
+fuse_send_req(struct fuse_conn *fc, struct fuse_req *req)
+{
+  struct fuse_in *in = &req->in;
+  int err = 0;
+  
+  CHECK_IN("(%p, %p, %p)", fc, req, in);
+
+  err = fuse_trans_one(fc, &in->h, sizeof(in->h), 1);
+  if (!err)
+    err = fuse_trans_args(fc, in->numargs, (struct fuse_arg *)in->args, 1);
+  
+  
+  CHECK_OUT("(%d)", err);
+  return err;
+}
+
+static int
+fuse_recv_req(struct fuse_conn *fc, struct fuse_req *req)
+{
+  int err = 0;
+  struct fuse_out *out = &req->out;
+  
+
+  err = fuse_trans_one(fc, &out->h, sizeof(out->h), 0);
+
+  if (!err)
+    err = fuse_trans_args(fc, out->numargs, (struct fuse_args *)out->args, 0);
+
+  return err;
+			  
+}
+
+static void
+fuse_request_send(struct fuse_conn *fc, struct fuse_req *req)
+{
+  int err = 0;
+
+  err = fuse_send_req(fc, req);
+  if (err)
+    goto out;
+  err = fuse_recv_req(fc, req);
+
+
+ out:
+  return err;
+}
+
+static void fuse_request_send_nowait(struct fuse_conn *fc, struct fuse_req *req)
+{
+	spin_lock(&fc->lock);
+	if (fc->connected) {
+		fuse_request_send_nowait_locked(fc, req);
+		spin_unlock(&fc->lock);
+	} else {
+		req->out.h.error = -ENOTCONN;
+		request_end(fc, req);
+	}
+}
+
+static void fuse_request_send_noreply(struct fuse_conn *fc, struct fuse_req *req)
+{
+	req->isreply = 0;
+	fuse_request_send_nowait(fc, req);
+}
+
+static void
+fuse_request_send_background(struct fuse_conn *fc, struct fuse_req *req)
+{
+	req->isreply = 1;
+	fuse_request_send_nowait(fc, req);
 }
 
 /* The following is stolen from Linux kernel dir.c*/
@@ -1325,6 +1448,40 @@ u64 fuse_get_attr_version(struct fuse_conn *fc)
 
 	return curr_version;
 }
+
+
+/*
+ * The following is stolen from Linux Kernel inode.c
+ */
+static void fuse_send_init(struct fuse_conn *fc, struct fuse_req *req)
+{
+	struct fuse_init_in *arg = &req->misc.init_in;
+
+	arg->major = FUSE_KERNEL_VERSION;
+	arg->minor = FUSE_KERNEL_MINOR_VERSION;
+	arg->max_readahead = fc->bdi.ra_pages * PAGE_CACHE_SIZE;
+	arg->flags |= FUSE_ASYNC_READ | FUSE_POSIX_LOCKS | FUSE_ATOMIC_O_TRUNC |
+		FUSE_EXPORT_SUPPORT | FUSE_BIG_WRITES | FUSE_DONT_MASK;
+	req->in.h.opcode = FUSE_INIT;
+	req->in.numargs = 1;
+	req->in.args[0].size = sizeof(*arg);
+	req->in.args[0].value = arg;
+	req->out.numargs = 1;
+	/* Variable length arguement used for backward compatibility
+	   with interface version < 7.5.  Rest of init_out is zeroed
+	   by do_get_request(), so a short reply is not a problem */
+	req->out.argvar = 1;
+	req->out.args[0].size = sizeof(struct fuse_init_out);
+	req->out.args[0].value = &req->misc.init_out;
+	req->end = process_init_reply;
+	fuse_request_send_background(fc, req);
+}
+
+static void fuse_free_conn(struct fuse_conn *fc)
+{
+	kfree(fc);
+}
+
 
 int fuse_valid_type(int m)
 {
