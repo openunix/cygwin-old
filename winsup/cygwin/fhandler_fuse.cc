@@ -14,6 +14,8 @@
 
 #include "winsup.h"
 #include <unistd.h>
+#include <ctype.h>
+#include <stdlib.h>
 
 #include "cygerrno.h"
 #include "path.h"
@@ -1000,11 +1002,11 @@ struct fuse_req {
 			};
 			struct path path;
 		} release;
+#endif
 		struct fuse_init_in init_in;
 		struct fuse_init_out init_out;
 		struct cuse_init_in cuse_init_in;
 		struct cuse_init_out cuse_init_out;
-#endif
 		struct {
 			struct fuse_read_in in;
 			u64 attr_ver;
@@ -1033,12 +1035,14 @@ struct fuse_req {
 #if 0
 	/** Link on fi->writepages */
 	struct list_head writepages_entry;
+#endif
 
 	/** Request completion callback */
 	void (*end)(struct fuse_conn *, struct fuse_req *);
-#endif
+#if 0
 	/** Request is stolen from fuse_file->reserved_req */
 	struct file *stolen_file;
+#endif
 };
 
 /**
@@ -1127,7 +1131,7 @@ struct fuse_conn {
 	/** Connection established, cleared on umount, connection
 	    abort and device release */
 	unsigned connected;
-  HANLDE fh;
+  HANDLE h;
 #if 0
 	/** Connection failed (version mismatch).  Cannot race with
 	    setting other bitfields since it is only set once in INIT
@@ -1285,13 +1289,18 @@ void fuse_put_request(struct fuse_conn *fc, struct fuse_req *req)
 			fuse_request_free(req);
 }
 
-
-
+/*
+ * The error coding system:
+ *	< 0 - Linux kernel style error
+ *	> 0 - Windows style error
+ *	= 0 - No error
+ */
 static int
 fuse_trans_one(struct fuse_conn *fc, void *val, unsigned size,
 	       int send)
 {
-  int rsize, ret = 0;
+  DWORD rsize;
+  int ret = 0;
 
   CHECK_IN("(%p, %p, %d, %s)", fc, val, size, send ? "send" : "recv");
   if (!fc || !fc->connected){
@@ -1329,7 +1338,7 @@ fuse_trans_args(struct fuse_conn *fc, unsigned numargs,
   
   for (i = 0; i < numargs; i++)  {
     struct fuse_arg *arg = &args[i];
-    err = fuse_trans_one(cs, arg->value, arg->size, send);
+    err = fuse_trans_one(fc, arg->value, arg->size, send);
     if (err)
       goto out;
   }
@@ -1366,13 +1375,13 @@ fuse_recv_req(struct fuse_conn *fc, struct fuse_req *req)
   err = fuse_trans_one(fc, &out->h, sizeof(out->h), 0);
 
   if (!err)
-    err = fuse_trans_args(fc, out->numargs, (struct fuse_args *)out->args, 0);
+    err = fuse_trans_args(fc, out->numargs, (struct fuse_arg *)out->args, 0);
 
   return err;
 			  
 }
 
-static void
+static int
 fuse_request_send(struct fuse_conn *fc, struct fuse_req *req)
 {
   int err = 0;
@@ -1386,7 +1395,7 @@ fuse_request_send(struct fuse_conn *fc, struct fuse_req *req)
  out:
   return err;
 }
-
+#if 0
 static void fuse_request_send_nowait(struct fuse_conn *fc, struct fuse_req *req)
 {
 	spin_lock(&fc->lock);
@@ -1411,7 +1420,7 @@ fuse_request_send_background(struct fuse_conn *fc, struct fuse_req *req)
 	req->isreply = 1;
 	fuse_request_send_nowait(fc, req);
 }
-
+#endif
 /* The following is stolen from Linux kernel dir.c*/
 
 static void fuse_lookup_init(struct fuse_conn *fc, struct fuse_req *req,
@@ -1453,13 +1462,387 @@ u64 fuse_get_attr_version(struct fuse_conn *fc)
 /*
  * The following is stolen from Linux Kernel inode.c
  */
-static void fuse_send_init(struct fuse_conn *fc, struct fuse_req *req)
+
+#define simple_strtoul strtoul
+#define simple_strtol strtol
+#define strlen (signed)strlen
+
+/* associates an integer enumerator with a pattern string. */
+struct match_token {
+	int token;
+	const char *pattern;
+};
+
+typedef struct match_token match_table_t[];
+
+/* Maximum number of arguments that match_token will find in a pattern */
+enum {MAX_OPT_ARGS = 3};
+
+/* Describe the location within a string of a substring */
+typedef struct {
+	char *from;
+	char *to;
+} substring_t;
+
+int match_token(char *, const match_table_t table, substring_t args[]);
+int match_string(substring_t *s, const char *str);
+int match_int(substring_t *, int *result);
+int match_octal(substring_t *, int *result);
+int match_hex(substring_t *, int *result);
+size_t match_strlcpy(char *, const substring_t *, size_t);
+
+/**
+ * match_one: - Determines if a string matches a simple pattern
+ * @s: the string to examine for presense of the pattern
+ * @p: the string containing the pattern
+ * @args: array of %MAX_OPT_ARGS &substring_t elements. Used to return match
+ * locations.
+ *
+ * Description: Determines if the pattern @p is present in string @s. Can only
+ * match extremely simple token=arg style patterns. If the pattern is found,
+ * the location(s) of the arguments will be returned in the @args array.
+ */
+static int match_one(char *s, const char *p, substring_t args[])
+{
+	char *meta;
+	int argc = 0;
+
+	if (!p)
+		return 1;
+
+	while(1) {
+		int len = -1;
+		meta = strchr(p, '%');
+		if (!meta)
+			return strcmp(p, s) == 0;
+
+		if (strncmp(p, s, meta-p))
+			return 0;
+
+		s += meta - p;
+		p = meta + 1;
+
+		if (isdigit(*p))
+			len = simple_strtoul(p, (char **) &p, 10);
+		else if (*p == '%') {
+			if (*s++ != '%')
+				return 0;
+			p++;
+			continue;
+		}
+
+		if (argc >= MAX_OPT_ARGS)
+			return 0;
+
+		args[argc].from = s;
+		switch (*p++) {
+		case 's':
+			if (strlen(s) == 0)
+				return 0;
+			else if (len == -1 || len > strlen(s))
+				len = strlen(s);
+			args[argc].to = s + len;
+			break;
+		case 'd':
+			simple_strtol(s, &args[argc].to, 0);
+			goto num;
+		case 'u':
+			simple_strtoul(s, &args[argc].to, 0);
+			goto num;
+		case 'o':
+			simple_strtoul(s, &args[argc].to, 8);
+			goto num;
+		case 'x':
+			simple_strtoul(s, &args[argc].to, 16);
+		num:
+			if (args[argc].to == args[argc].from)
+				return 0;
+			break;
+		default:
+			return 0;
+		}
+		s = args[argc].to;
+		argc++;
+	}
+}
+
+/**
+ * match_token: - Find a token (and optional args) in a string
+ * @s: the string to examine for token/argument pairs
+ * @table: match_table_t describing the set of allowed option tokens and the
+ * arguments that may be associated with them. Must be terminated with a
+ * &struct match_token whose pattern is set to the NULL pointer.
+ * @args: array of %MAX_OPT_ARGS &substring_t elements. Used to return match
+ * locations.
+ *
+ * Description: Detects which if any of a set of token strings has been passed
+ * to it. Tokens can include up to MAX_OPT_ARGS instances of basic c-style
+ * format identifiers which will be taken into account when matching the
+ * tokens, and whose locations will be returned in the @args array.
+ */
+int match_token(char *s, const match_table_t table, substring_t args[])
+{
+	const struct match_token *p;
+
+	for (p = table; !match_one(s, p->pattern, args) ; p++)
+		;
+
+	return p->token;
+}
+
+/**
+ * match_string: check for a particular parameter
+ * @s: substring to be scanned
+ * @str: string to scan for
+ *
+ * Description: Return if a &substring_t is equal to string @str.
+ */
+int match_string(substring_t *s, const char *str)
+{
+	return strlen(str) == s->to - s->from &&
+	       !memcmp(str, s->from, s->to - s->from);
+}
+
+/**
+ * match_number: scan a number in the given base from a substring_t
+ * @s: substring to be scanned
+ * @result: resulting integer on success
+ * @base: base to use when converting string
+ *
+ * Description: Given a &substring_t and a base, attempts to parse the substring
+ * as a number in that base. On success, sets @result to the integer represented
+ * by the string and returns 0. Returns either -ENOMEM or -EINVAL on failure.
+ */
+static int match_number(substring_t *s, int *result, int base)
+{
+	char *endp;
+	int ret;
+	char buf[s->to - s->from + 1];
+
+	memcpy(buf, s->from, s->to - s->from);
+	buf[s->to - s->from] = '\0';
+	*result = simple_strtol(buf, &endp, base);
+	ret = 0;
+	if (endp == buf)
+		ret = -EINVAL;
+
+	return ret;
+}
+
+/**
+ * match_int: - scan a decimal representation of an integer from a substring_t
+ * @s: substring_t to be scanned
+ * @result: resulting integer on success
+ *
+ * Description: Attempts to parse the &substring_t @s as a decimal integer. On
+ * success, sets @result to the integer represented by the string and returns 0.
+ * Returns either -ENOMEM or -EINVAL on failure.
+ */
+int match_int(substring_t *s, int *result)
+{
+	return match_number(s, result, 0);
+}
+
+/**
+ * match_octal: - scan an octal representation of an integer from a substring_t
+ * @s: substring_t to be scanned
+ * @result: resulting integer on success
+ *
+ * Description: Attempts to parse the &substring_t @s as an octal integer. On
+ * success, sets @result to the integer represented by the string and returns
+ * 0. Returns either -ENOMEM or -EINVAL on failure.
+ */
+int match_octal(substring_t *s, int *result)
+{
+	return match_number(s, result, 8);
+}
+
+/**
+ * match_hex: - scan a hex representation of an integer from a substring_t
+ * @s: substring_t to be scanned
+ * @result: resulting integer on success
+ *
+ * Description: Attempts to parse the &substring_t @s as a hexadecimal integer.
+ * On success, sets @result to the integer represented by the string and
+ * returns 0. Returns either -ENOMEM or -EINVAL on failure.
+ */
+int match_hex(substring_t *s, int *result)
+{
+	return match_number(s, result, 16);
+}
+
+/**
+ * match_strlcpy: - Copy the characters from a substring_t to a sized buffer
+ * @dest: where to copy to
+ * @src: &substring_t to copy
+ * @size: size of destination buffer
+ *
+ * Description: Copy the characters in &substring_t @src to the
+ * c-style string @dest.  Copy no more than @size - 1 characters, plus
+ * the terminating NUL.  Return length of @src.
+ */
+size_t match_strlcpy(char *dest, const substring_t *src, size_t size)
+{
+	size_t ret = src->to - src->from;
+
+	if (size) {
+		size_t len = ret >= size ? size - 1 : ret;
+		memcpy(dest, src->from, len);
+		dest[len] = '\0';
+	}
+	return ret;
+}
+
+#if 0
+static void fuse_free_conn(struct fuse_conn *fc)
+{
+	free(fc);
+}
+#endif
+
+int fuse_valid_type(int m)
+{
+	return S_ISREG(m) || S_ISDIR(m) || S_ISLNK(m) || S_ISCHR(m) ||
+		S_ISBLK(m) || S_ISFIFO(m) || S_ISSOCK(m);
+}
+
+
+#define FUSE_SUPER_MAGIC 0x65735546
+
+#define FUSE_DEFAULT_BLKSIZE 512
+
+/** Maximum number of outstanding background requests */
+#define FUSE_DEFAULT_MAX_BACKGROUND 12
+
+/** Congestion starts at 75% of maximum */
+#define FUSE_DEFAULT_CONGESTION_THRESHOLD (FUSE_DEFAULT_MAX_BACKGROUND * 3 / 4)
+
+
+struct fuse_mount_data {
+	int fd;
+	unsigned rootmode;
+	unsigned user_id;
+	unsigned group_id;
+	unsigned fd_present:1;
+	unsigned rootmode_present:1;
+	unsigned user_id_present:1;
+	unsigned group_id_present:1;
+	unsigned flags;
+	unsigned max_read;
+	unsigned blksize;
+};
+
+enum {
+	OPT_FD,
+	OPT_ROOTMODE,
+	OPT_USER_ID,
+	OPT_GROUP_ID,
+	OPT_DEFAULT_PERMISSIONS,
+	OPT_ALLOW_OTHER,
+	OPT_MAX_READ,
+	OPT_BLKSIZE,
+	OPT_ERR
+};
+
+static const match_table_t tokens = {
+	{OPT_FD,			"fd=%u"},
+	{OPT_ROOTMODE,			"rootmode=%o"},
+	{OPT_USER_ID,			"user_id=%u"},
+	{OPT_GROUP_ID,			"group_id=%u"},
+	{OPT_DEFAULT_PERMISSIONS,	"default_permissions"},
+	{OPT_ALLOW_OTHER,		"allow_other"},
+	{OPT_MAX_READ,			"max_read=%u"},
+	{OPT_BLKSIZE,			"blksize=%u"},
+	{OPT_ERR,			NULL}
+};
+
+static int parse_fuse_opt(char *opt, struct fuse_mount_data *d, int is_bdev)
+{
+	char *p;
+	memset(d, 0, sizeof(struct fuse_mount_data));
+	d->max_read = ~0;
+	d->blksize = FUSE_DEFAULT_BLKSIZE;
+
+	while ((p = strsep(&opt, ",")) != NULL) {
+		int token;
+		int value;
+		substring_t args[MAX_OPT_ARGS];
+		if (!*p)
+			continue;
+
+		token = match_token(p, tokens, args);
+		switch (token) {
+		case OPT_FD:
+			if (match_int(&args[0], &value))
+				return 0;
+			d->fd = value;
+			d->fd_present = 1;
+			break;
+
+		case OPT_ROOTMODE:
+			if (match_octal(&args[0], &value))
+				return 0;
+			if (!fuse_valid_type(value))
+				return 0;
+			d->rootmode = value;
+			d->rootmode_present = 1;
+			break;
+
+		case OPT_USER_ID:
+			if (match_int(&args[0], &value))
+				return 0;
+			d->user_id = value;
+			d->user_id_present = 1;
+			break;
+
+		case OPT_GROUP_ID:
+			if (match_int(&args[0], &value))
+				return 0;
+			d->group_id = value;
+			d->group_id_present = 1;
+			break;
+
+		case OPT_DEFAULT_PERMISSIONS:
+			d->flags |= FUSE_DEFAULT_PERMISSIONS;
+			break;
+
+		case OPT_ALLOW_OTHER:
+			d->flags |= FUSE_ALLOW_OTHER;
+			break;
+
+		case OPT_MAX_READ:
+			if (match_int(&args[0], &value))
+				return 0;
+			d->max_read = value;
+			break;
+
+		case OPT_BLKSIZE:
+			if (!is_bdev || match_int(&args[0], &value))
+				return 0;
+			d->blksize = value;
+			break;
+
+		default:
+			return 0;
+		}
+	}
+
+	if (!d->fd_present || !d->rootmode_present ||
+	    !d->user_id_present || !d->group_id_present)
+		return 0;
+
+	return 1;
+}
+
+static void fuse_init_init(struct fuse_req *req)
 {
 	struct fuse_init_in *arg = &req->misc.init_in;
 
 	arg->major = FUSE_KERNEL_VERSION;
 	arg->minor = FUSE_KERNEL_MINOR_VERSION;
+#if 0
 	arg->max_readahead = fc->bdi.ra_pages * PAGE_CACHE_SIZE;
+#endif
 	arg->flags |= FUSE_ASYNC_READ | FUSE_POSIX_LOCKS | FUSE_ATOMIC_O_TRUNC |
 		FUSE_EXPORT_SUPPORT | FUSE_BIG_WRITES | FUSE_DONT_MASK;
 	req->in.h.opcode = FUSE_INIT;
@@ -1473,20 +1856,10 @@ static void fuse_send_init(struct fuse_conn *fc, struct fuse_req *req)
 	req->out.argvar = 1;
 	req->out.args[0].size = sizeof(struct fuse_init_out);
 	req->out.args[0].value = &req->misc.init_out;
+#if 0
 	req->end = process_init_reply;
 	fuse_request_send_background(fc, req);
-}
-
-static void fuse_free_conn(struct fuse_conn *fc)
-{
-	kfree(fc);
-}
-
-
-int fuse_valid_type(int m)
-{
-	return S_ISREG(m) || S_ISDIR(m) || S_ISLNK(m) || S_ISCHR(m) ||
-		S_ISBLK(m) || S_ISFIFO(m) || S_ISSOCK(m);
+#endif
 }
 
 
@@ -1825,10 +2198,36 @@ int
 fhandler_fs_fuse::mount (const char *in, char *out)
 {
   int ret = 0;
+  struct fuse_mount_data d;
+  fhandler_dev_fuse *fh;
+  struct fuse_req *init_req;
   
   CHECK_IN("(%s, %p)", in, out);
+
   strncpy(out, in, CYG_MAX_PATH);
   out[CYG_MAX_PATH - 1] = '\0';
+  ret = parse_fuse_opt(out, &d, 0);
+
+  if (cygheap->fdtab.not_open (d.fd))
+    {
+      ret = EBADF;
+      goto out;
+    }
+  else
+    {
+      fh = (fhandler_dev_fuse *)(cygheap->fdtab[(d.fd)]);
+    }
+
+  init_req = fuse_request_alloc();
+  if (!init_req)
+    {
+      ret = ENOMEM;
+      goto out;
+    }
+  
+  fuse_init_init(init_req);
+
+ out:
   CHECK_OUT("(%s, %d)", out, ret);
   return ret;
 }
