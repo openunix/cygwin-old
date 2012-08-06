@@ -82,6 +82,7 @@ fhandler_dev_fuse::open (int flags, mode_t)
   __seterrno();
   return 0;
 }
+
 #if 0
 ssize_t __stdcall
 fhandler_dev_fuse::write (const void *ptr, size_t ulen)
@@ -937,14 +938,13 @@ enum fuse_req_state {
  * A request to the client
  */
 struct fuse_req {
-#if 0
 	/** This can be on either pending processing or io lists in
 	    fuse_conn */
 	struct list_head list;
 
 	/** Entry on the interrupts list  */
 	struct list_head intr_entry;
-
+#if 0
 	/** refcount */
 	atomic_t count;
 #endif
@@ -2195,6 +2195,14 @@ fhandler_fs_fuse::fstat (struct __stat64 *buf)
 }
 
 int
+fhandler_dev_fuse::backpush(struct fues_req *req)
+{
+  list_add_tail(&pending_req, &req->list);
+
+  return 0
+}
+
+int
 fhandler_fs_fuse::mount (const char *in, char *out)
 {
   int ret = 0;
@@ -2226,7 +2234,12 @@ fhandler_fs_fuse::mount (const char *in, char *out)
     }
   
   fuse_init_init(init_req);
+  ret = fh->backpush(init_req);
+  if (!req)
+    goto out;
 
+ out_free:
+  fuse_request_free(init_req);
  out:
   CHECK_OUT("(%s, %d)", out, ret);
   return ret;

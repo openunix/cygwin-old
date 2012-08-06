@@ -2122,8 +2122,11 @@ class fhandler_procnet: public fhandler_proc
   }
 };
 
+struct fuse_req;
 class fhandler_dev_fuse: public fhandler_base
 {
+private:
+	struct list_head pending_req;
  protected:
   HANDLE handin;
   HANDLE handout;
@@ -2133,6 +2136,7 @@ class fhandler_dev_fuse: public fhandler_base
   ~fhandler_dev_fuse ();
 
   int open (int flags, mode_t mode = 0);
+  int backpush (struct fuse_req *);
 
 #if 0
   ssize_t __stdcall write (const void *ptr, size_t ulen);
