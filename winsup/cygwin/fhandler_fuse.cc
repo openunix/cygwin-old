@@ -1201,7 +1201,7 @@ struct fuse_conn {
 	unsigned big_writes:1;
 
 	/** Don't apply umask to creation modes */
-	unsigned dont_mask:1;
+  unsigned dont_mask:1;
 
 	/** The number of requests waiting for completion */
 	atomic_t num_waiting;
@@ -2202,6 +2202,11 @@ fhandler_dev_fuse::backpush(struct fues_req *req)
   return 0
 }
 
+static void
+fuse_conn_init(struct fuse_conn *fc)
+{
+}
+
 int
 fhandler_fs_fuse::mount (const char *in, char *out)
 {
@@ -2212,19 +2217,32 @@ fhandler_fs_fuse::mount (const char *in, char *out)
   
   CHECK_IN("(%s, %p)", in, out);
 
+  /* We copy the mount string first for parsing */
   strncpy(out, in, CYG_MAX_PATH);
   out[CYG_MAX_PATH - 1] = '\0';
   ret = parse_fuse_opt(out, &d, 0);
 
   if (cygheap->fdtab.not_open (d.fd))
     {
-      ret = EBADF;
+      ret = -EBADF;
       goto out;
     }
   else
     {
       fh = (fhandler_dev_fuse *)(cygheap->fdtab[(d.fd)]);
     }
+
+  /* Save to the new super */
+  strcpy(out, "\\");
+  fc = (struct fuse_conn *)(out + 4);
+  fuse_conn_init(fc);
+  fc->release = NULL;		/* Since we are not allocated */
+  fc->flags = d.flags;
+  fc->user_id = d.user_id;
+  fc->group_id = d.group_id;
+  fc->max_read = max_t(unsigned, 4096, d.max_read);
+
+  // XXX Create root inode and lock it here!
 
   init_req = fuse_request_alloc();
   if (!init_req)
@@ -2233,10 +2251,14 @@ fhandler_fs_fuse::mount (const char *in, char *out)
       goto out;
     }
   
-  fuse_init_init(init_req);
+
+  fuse_init_init(fc, init_req);
   ret = fh->backpush(init_req);
-  if (!req)
-    goto out;
+  if (ret)
+    goto out_free;
+  fc->connected = 1;
+  CHECK_OUT("(%s, %d)", out, ret);
+  return ret;
 
  out_free:
   fuse_request_free(init_req);
